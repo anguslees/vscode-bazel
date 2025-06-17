@@ -1,21 +1,21 @@
 import * as vscode from "vscode";
 import { BazelFileCoverage, parseLcov } from "./lcov_parser";
 
-let testController: vscode.TestController;
+let bazelCoverageController: vscode.TestController;
 let coverageRunProfile: vscode.TestRunProfile;
 
 export function activateTesting(): vscode.Disposable[] {
   const subscriptions: vscode.Disposable[] = [];
 
   // Create the test controller
-  testController = vscode.tests.createTestController(
-    "bazel-coverage",
-    "Bazel Coverage",
+  bazelCoverageController = vscode.tests.createTestController(
+    "bazel-coverage-controller",
+    "Bazel Coverage Controller",
   );
-  subscriptions.push(testController);
+  subscriptions.push(bazelCoverageController);
 
   // Create the test run profile
-  coverageRunProfile = testController.createRunProfile(
+  coverageRunProfile = bazelCoverageController.createRunProfile(
     "Bazel Coverage",
     vscode.TestRunProfileKind.Coverage,
     undefined,
@@ -40,7 +40,7 @@ export async function showLcovCoverage(
   baseFolder: string,
   lcov: string,
 ) {
-  const run = testController.createTestRun(
+  const run = bazelCoverageController.createTestRun(
     new vscode.TestRunRequest(undefined, undefined, coverageRunProfile),
     null,
     false,
@@ -51,3 +51,5 @@ export async function showLcovCoverage(
   }
   run.end();
 }
+
+export { activateBazelTests } from './bazel_test_adapter';

@@ -30,7 +30,7 @@ import {
 import { BazelTargetSymbolProvider } from "../symbols";
 import { BazelWorkspaceTreeProvider } from "../workspace-tree";
 import { activateCommandVariables } from "./command_variables";
-import { activateTesting } from "../test-explorer";
+import { activateBazelTests, activateTesting } from "../test-explorer";
 import { activateWrapperCommands } from "./bazel_wrapper_commands";
 
 /**
@@ -158,6 +158,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // Test provider
     ...activateTesting(),
   );
+  activateBazelTests(context);
 
   // Notify the user if buildifier is not available on their path (or where
   // their settings expect it).
