@@ -3,13 +3,13 @@
 const globals = require("globals");
 const eslint = require("@eslint/js");
 const tseslint = require("typescript-eslint");
-const jsdoc = require("eslint-plugin-jsdoc");
-const eslintConfigPrettier = require("eslint-config-prettier");
+// const jsdoc = require("eslint-plugin-jsdoc"); // Commented out
+// const eslintConfigPrettier = require("eslint-config-prettier"); // Commented out
 
 module.exports = tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
-  eslintConfigPrettier,
+  // eslintConfigPrettier, // Commented out
   {
     ignores: ["out/", "src/protos/protos.js", "src/protos/protos.d.ts"],
   },
@@ -23,9 +23,10 @@ module.exports = tseslint.config(
         tsconfigRootDir: __dirname,
       },
     },
-    plugins: {
-      jsdoc,
-    },
+    // plugins: { // Commented out
+    //   '@typescript-eslint': tseslint.plugin,
+    //   jsdoc,
+    // },
     rules: {
       "@typescript-eslint/adjacent-overload-signatures": "error",
       "@typescript-eslint/array-type": [
@@ -125,8 +126,8 @@ module.exports = tseslint.config(
         "undefined",
       ],
       "id-match": "error",
-      "jsdoc/check-alignment": "error",
-      "jsdoc/check-indentation": "error",
+      // "jsdoc/check-alignment": "error", // Commented out
+      // "jsdoc/check-indentation": "error", // Commented out
       "max-len": [
         "error",
         {

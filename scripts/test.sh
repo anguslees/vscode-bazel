@@ -27,4 +27,4 @@ js-yaml syntaxes/bazelrc.tmLanguage.yaml > syntaxes/bazelrc.tmLanguage.json
 vscode-tmgrammar-snap "$@" test/example.bazelrc
 
 # Java Script tests
-vscode-test
+xvfb-run --auto-servernum vscode-test
