@@ -262,7 +262,7 @@ class BazelDebugSession extends DebugSession {
       }
     }
 
-    this.bazelConnection
+    void this.bazelConnection
       .sendRequest({
         setBreakpoints: skylark_debugging.SetBreakpointsRequest.create({
           breakpoint: bazelBreakpoints,
@@ -490,7 +490,7 @@ class BazelDebugSession extends DebugSession {
     this.scopeThreadIds.clear();
     this.valueThreadIds.clear();
 
-    this.bazelConnection
+    void this.bazelConnection
       .sendRequest({
         continueExecution: skylark_debugging.ContinueExecutionRequest.create({
           stepping,
