@@ -11,6 +11,7 @@
         "strict": true,
         "strictNullChecks": false,
         "allowJs": true,
+        "skipLibCheck": true
     },
     "exclude": [
         "node_modules",

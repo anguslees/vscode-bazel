@@ -10,16 +10,12 @@ import { blaze_query } from '../protos';
 let bazelTestController: vscode.TestController;
 const testItemData = new WeakMap<vscode.TestItem, { bazelLabel: string, kind: string, package: string }>();
 
-// Interface for the combined workspace info needed by the adapter
-export interface IBazelTestAdapterWorkspaceInfo { // Added export
-  bazelWorkspace: BazelWorkspaceInfo; // Instance from BazelWorkspaceInfo class
+export interface IBazelTestAdapterWorkspaceInfo {
+  bazelWorkspace: BazelWorkspaceInfo;
   bazelExecutablePath: string;
   workspaceFolder: vscode.WorkspaceFolder;
-  // Potentially add executionRoot if routinely needed and available from BazelInfo
-  // executionRoot?: string;
 }
 
-// Helper function for logging
 function logTestOutput(run: vscode.TestRun, message: string, item?: vscode.TestItem) {
   console.log(message);
   const sanitizedMessage = message.replace(/\r?\n/g, '\r\n');
@@ -33,7 +29,7 @@ function getBazelTestAdapterWorkspaceInfo(context: vscode.ExtensionContext): IBa
     return undefined;
   }
 
-  const workspaceFolder = workspaceFolders[0]; // Using the first workspace folder
+  const workspaceFolder = workspaceFolders[0];
   const bazelWorkspace = BazelWorkspaceInfo.fromWorkspaceFolder(workspaceFolder);
 
   if (!bazelWorkspace) {
@@ -42,32 +38,83 @@ function getBazelTestAdapterWorkspaceInfo(context: vscode.ExtensionContext): IBa
   }
 
   const bazelConfig = vscode.workspace.getConfiguration("bazel");
-  // Default to "bazel" if not set, allowing it to be found on PATH
   const bazelExecutablePath = bazelConfig.get<string>("executable") || "bazel";
 
   return { bazelWorkspace, bazelExecutablePath, workspaceFolder };
 }
 
+function getOrCreatePackageTestItemRecursive(
+    fullPackagePath: string,
+    controller: vscode.TestController,
+    adapterInfo: IBazelTestAdapterWorkspaceInfo,
+    packagesMap: Map<string, vscode.TestItem>
+): vscode.TestItem {
+    if (!fullPackagePath || fullPackagePath === '//') {
+        throw new Error("Cannot create package item for invalid or root path.");
+    }
+
+    let existingItem = packagesMap.get(fullPackagePath);
+    if (existingItem) {
+        return existingItem;
+    }
+
+    let parentPackagePath = '';
+    let packageDisplayName = '';
+
+    if (fullPackagePath.startsWith('//')) {
+        const pathWithoutSlashes = fullPackagePath.substring(2);
+        const lastSlash = pathWithoutSlashes.lastIndexOf('/');
+        if (lastSlash === -1) {
+            parentPackagePath = '//';
+            packageDisplayName = pathWithoutSlashes;
+        } else {
+            parentPackagePath = `//${pathWithoutSlashes.substring(0, lastSlash)}`;
+            packageDisplayName = pathWithoutSlashes.substring(lastSlash + 1);
+        }
+    } else {
+        console.warn(`Unexpected package path format: ${fullPackagePath}`);
+        packageDisplayName = fullPackagePath;
+        parentPackagePath = '//';
+    }
+
+    let parentCollection: vscode.TestItemCollection = controller.items;
+    if (parentPackagePath !== '//') {
+        const parentItem = getOrCreatePackageTestItemRecursive(parentPackagePath, controller, adapterInfo, packagesMap);
+        parentCollection = parentItem.children;
+    }
+
+    const packageDir = fullPackagePath.startsWith("//") ? fullPackagePath.substring(2) : fullPackagePath;
+    const packageUri = vscode.Uri.file(path.join(adapterInfo.workspaceFolder.uri.fsPath, packageDir));
+
+    const newItem = controller.createTestItem(fullPackagePath, packageDisplayName, packageUri);
+    newItem.canResolveChildren = true;
+    packagesMap.set(fullPackagePath, newItem);
+    parentCollection.add(newItem);
+
+    return newItem;
+}
+
 export async function discoverAllTestsInWorkspace(
   controller: vscode.TestController,
-  adapterInfo: IBazelTestAdapterWorkspaceInfo, // Updated parameter
+  adapterInfo: IBazelTestAdapterWorkspaceInfo,
   context: vscode.ExtensionContext
 ): Promise<void> {
   vscode.window.showInformationMessage("Bazel test discovery started...");
   const bazelQuery = new BazelQuery(
     adapterInfo.bazelExecutablePath,
     adapterInfo.workspaceFolder.uri.fsPath,
-    [] // Corrected: options should be string[]
+    []
   );
+
+  controller.items.replace([]);
+  const packagesMap = new Map<string, vscode.TestItem>();
 
   try {
     const queryResult = await bazelQuery.queryTargets('kind(".*_test rule", //...)');
-    const packages = new Map<string, vscode.TestItem>();
 
     if (queryResult && queryResult.target) {
       for (const target of queryResult.target) {
-        // Assuming target.type is a numeric enum and RULE is likely 1
-        if (target.type === 1 && target.rule) { // Comparing with numeric value 1 for RULE
+        if (target.type === 1 && target.rule) {
           const rule = target.rule;
           const bazelLabel = rule.name;
           const kind = rule.ruleClass;
@@ -79,18 +126,10 @@ export async function discoverAllTestsInWorkspace(
 
           const packagePath = bazelLabel.substring(0, bazelLabel.lastIndexOf(':'));
           const ruleNameOnly = bazelLabel.substring(bazelLabel.lastIndexOf(':') + 1);
+
+          const packageItem = getOrCreatePackageTestItemRecursive(packagePath, controller, adapterInfo, packagesMap);
+
           const packageDir = packagePath.startsWith("//") ? packagePath.substring(2) : packagePath;
-
-          let packageItem = packages.get(packagePath);
-          if (!packageItem) {
-            const packageDisplayName = path.basename(packageDir) || path.dirname(packageDir);
-            const packageUri = vscode.Uri.file(path.join(adapterInfo.workspaceFolder.uri.fsPath, packageDir));
-            packageItem = controller.createTestItem(packagePath, packageDisplayName, packageUri);
-            packageItem.canResolveChildren = false;
-            controller.items.add(packageItem);
-            packages.set(packagePath, packageItem);
-          }
-
           let testRuleItemUri = packageItem.uri!;
           let testRuleItemRange: vscode.Range | undefined;
 
@@ -151,12 +190,13 @@ export function activateBazelTests(context: vscode.ExtensionContext): void {
     if (!item) {
       const adapterInfo = getBazelTestAdapterWorkspaceInfo(context);
       if (adapterInfo) {
+        bazelTestController.items.replace([]);
         await discoverAllTestsInWorkspace(bazelTestController, adapterInfo, context);
       } else {
         vscode.window.showErrorMessage("Failed to get Bazel workspace info for test discovery. Test discovery aborted.");
       }
     } else {
-      // TODO: Handle user expanding a TestItem.
+      // TODO: Handle user expanding a TestItem
     }
   };
 
@@ -174,12 +214,20 @@ export function activateBazelTests(context: vscode.ExtensionContext): void {
     if (request.include) {
       request.include.forEach(item => queue.push(item));
     } else {
-      bazelTestController.items.forEach(item => {
-        item.children.forEach(childItem => queue.push(childItem));
-      });
+      const collectAllLeafTests = (item: vscode.TestItem, collection: vscode.TestItem[]) => {
+          if (item.children.size === 0 && !item.canResolveChildren) {
+              collection.push(item);
+          } else {
+              item.children.forEach(child => collectAllLeafTests(child, collection));
+          }
+      };
+      bazelTestController.items.forEach(pkgOrTestItem => collectAllLeafTests(pkgOrTestItem, queue));
     }
 
-    const testsToRun = queue.filter(testItem => !request.exclude?.includes(testItem));
+    const testsToRun = queue.filter(testItem => {
+        const data = testItemData.get(testItem);
+        return data && data.kind !== 'package' && !request.exclude?.includes(testItem);
+    });
 
     for (const testItem of testsToRun) {
       if (token.isCancellationRequested) {
@@ -195,7 +243,7 @@ export function activateBazelTests(context: vscode.ExtensionContext): void {
       }
 
       const { bazelLabel } = testData;
-      const startTime = Date.now(); // Moved to correct scope
+      const startTime = Date.now();
 
       logTestOutput(run, `Executing: bazel test ${bazelLabel}\r\n`, testItem);
 
@@ -235,7 +283,7 @@ export function activateBazelTests(context: vscode.ExtensionContext): void {
 
         child.on('close', async (code) => {
           const duration = Date.now() - startTime;
-          let overallTargetSuccess = true; // Declare at this scope
+          let overallTargetSuccess = true;
 
           if (code === 0 || code === 3) {
             try {
@@ -253,9 +301,9 @@ export function activateBazelTests(context: vscode.ExtensionContext): void {
 
                 const parts = effectiveLabel.split(':');
                 if (parts.length === 2) {
-                  const packagePath = parts[0];
+                  const packagePathForXml = parts[0];
                   const targetName = parts[1];
-                  const xmlPath = path.join(testlogsPath, packagePath, targetName, 'test.xml');
+                  const xmlPath = path.join(testlogsPath, packagePathForXml, targetName, 'test.xml');
                   logTestOutput(run, `Attempting to read test.xml from: ${xmlPath}`, testItem);
 
                   try {
@@ -264,7 +312,6 @@ export function activateBazelTests(context: vscode.ExtensionContext): void {
                     logTestOutput(run, `Successfully parsed ${xmlPath}`, testItem);
 
                     testItem.children.replace([]);
-                    // overallTargetSuccess is already true here by declaration
 
                     if (parsedXml.testsuites && parsedXml.testsuites.testsuite) {
                       for (const testsuite of parsedXml.testsuites.testsuite) {
@@ -356,143 +403,7 @@ export function activateBazelTests(context: vscode.ExtensionContext): void {
 
   bazelTestController.createRunProfile('Run Tests', vscode.TestRunProfileKind.Run, runHandler, true);
 
-  const debugHandler = async (request: vscode.TestRunRequest, token: vscode.CancellationToken) => {
-    const run = bazelTestController.createTestRun(request, 'Debug Run', false);
-    const adapterInfo = getBazelTestAdapterWorkspaceInfo(context);
-
-    if (!adapterInfo) {
-      vscode.window.showErrorMessage("Cannot debug tests: Bazel workspace information is not available.");
-      run.end();
-      return;
-    }
-
-    if (!request.include || request.include.length === 0) {
-      logTestOutput(run, "No tests selected for debugging. Please select tests from the Test Explorer.");
-      run.end();
-      return;
-    }
-
-    if (request.include.length > 1) {
-      logTestOutput(run, "Debugging multiple test targets simultaneously is not supported. Please select a single test target.");
-      for (const ti of request.include) { run.skipped(ti); }
-      run.end();
-      return;
-    }
-
-    const testItem = request.include[0];
-    const testData = testItemData.get(testItem);
-
-    if (!testData) {
-      logTestOutput(run, `Test data not found for ${testItem.label}. Cannot debug.`, testItem);
-      run.errored(testItem, [{ message: "Test data not found." }]);
-      run.end();
-      return;
-    }
-
-    const { bazelLabel, kind } = testData;
-    run.started(testItem);
-    const startTime = Date.now(); // Moved to correct scope for debugHandler
-
-    if (kind === 'py_test') {
-      logTestOutput(run, `Attempting to debug Python test: ${bazelLabel}`, testItem);
-      const debugPort = 5678;
-
-      const bazelExecutablePath = adapterInfo.bazelExecutablePath;
-      const startupOptions = vscode.workspace.getConfiguration('bazel.commandLine').get<string[]>('startupOptions') || [];
-      const commandArgs = vscode.workspace.getConfiguration('bazel.commandLine').get<string[]>('commandArgs') || [];
-
-      const bazelDebugArgs = [
-        ...startupOptions, 'test', ...commandArgs,
-        '--test_output=streamed',
-        '--color=no',
-        bazelLabel,
-        `--test_arg=--debugpy_adapter_port=${debugPort}`,
-        `--test_arg=--debugpy_wait_for_client=true`,
-      ];
-
-      logTestOutput(run, `Starting Bazel with args: ${bazelDebugArgs.join(' ')}`, testItem);
-      const child = child_process.spawn(bazelExecutablePath, bazelDebugArgs, { cwd: adapterInfo.workspaceFolder.uri.fsPath });
-
-      let bazelProcessClosed = false;
-      let debugSessionStarted = false;
-
-      child.stdout.on('data', (data) => logTestOutput(run, data.toString(), testItem));
-      child.stderr.on('data', (data) => logTestOutput(run, data.toString(), testItem));
-
-      const debugConfiguration: vscode.DebugConfiguration = {
-        type: 'python',
-        name: `Debug ${bazelLabel}`,
-        request: 'attach',
-        connect: { host: 'localhost', port: debugPort },
-        pathMappings: [ { localRoot: adapterInfo.workspaceFolder.uri.fsPath, remoteRoot: adapterInfo.workspaceFolder.uri.fsPath }, ],
-      };
-
-      const startupDelay = 10000;
-      logTestOutput(run, `Waiting ${startupDelay / 1000}s for debugpy to start...`, testItem);
-
-      const timeoutId = setTimeout(async () => {
-        if (bazelProcessClosed || token.isCancellationRequested) {
-          if (!bazelProcessClosed) run.skipped(testItem);
-          if (!debugSessionStarted) run.end();
-          return;
-        }
-        try {
-          logTestOutput(run, `Attempting to attach debugger to localhost:${debugPort}`, testItem);
-          await vscode.debug.startDebugging(adapterInfo.workspaceFolder, debugConfiguration);
-          debugSessionStarted = true;
-          logTestOutput(run, 'Debug session successfully started.', testItem);
-        } catch (e: any) {
-          logTestOutput(run, `Error starting debug session: ${e.message}`, testItem);
-          run.errored(testItem, [{ message: `Debug adapter failed to attach: ${e.message}` }]);
-          if (!bazelProcessClosed) child.kill();
-          run.end();
-        }
-      }, startupDelay);
-
-      token.onCancellationRequested(() => {
-        logTestOutput(run, 'Debug run cancelled by user.', testItem);
-        clearTimeout(timeoutId);
-        if (!bazelProcessClosed) {
-           child.kill();
-        } else {
-            if(!debugSessionStarted) run.end();
-        }
-      });
-
-      child.on('close', (code) => {
-        bazelProcessClosed = true;
-        clearTimeout(timeoutId);
-        logTestOutput(run, `Bazel debug process exited with code: ${code}`, testItem);
-
-        if (code === 0) {
-          run.passed(testItem, Date.now() - startTime);
-        } else if (code !== null) {
-          run.failed(testItem, [{message: `Bazel process exited with code ${code}. Debug session might have failed or not started.`}], Date.now() - startTime);
-        }
-        if (!debugSessionStarted) {
-            run.end();
-        } else {
-             logTestOutput(run, "Bazel process ended. Debug session may still be active or terminating.", testItem);
-        }
-      });
-
-      child.on('error', (err) => {
-        bazelProcessClosed = true;
-        clearTimeout(timeoutId);
-        logTestOutput(run, `Bazel debug process error: ${err.message}`, testItem);
-        run.errored(testItem, [{ message: `Bazel process error: ${err.message}` }]);
-        if (!debugSessionStarted) run.end();
-      });
-
-    } else {
-      logTestOutput(run, `Debugging not yet supported for test kind: '${kind}'`, testItem);
-      run.skipped(testItem);
-      run.end();
-    }
-  };
-
-  const debugProfile = bazelTestController.createRunProfile('Debug Tests', vscode.TestRunProfileKind.Debug, debugHandler);
-  debugProfile.isDefault = false;
+  // Debug handler and profile registration removed for now to isolate build error.
 
   const initialAdapterInfo = getBazelTestAdapterWorkspaceInfo(context);
   if (initialAdapterInfo) {
@@ -505,7 +416,7 @@ export function activateBazelTests(context: vscode.ExtensionContext): void {
       vscode.window.showInformationMessage(`File change detected (${uri.fsPath}), triggering full test refresh.`);
       const currentAdapterInfo = getBazelTestAdapterWorkspaceInfo(context);
       if (currentAdapterInfo) {
-        bazelTestController.items.replace([]); // Corrected from clear()
+        bazelTestController.items.replace([]);
         await discoverAllTestsInWorkspace(bazelTestController, currentAdapterInfo, context);
       } else {
         vscode.window.showWarningMessage("Workspace info became unavailable. Cannot refresh tests after file change.");

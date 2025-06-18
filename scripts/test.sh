@@ -27,4 +27,7 @@ pnpm exec js-yaml syntaxes/bazelrc.tmLanguage.yaml > syntaxes/bazelrc.tmLanguage
 pnpm exec vscode-tmgrammar-snap "$@" test/example.bazelrc
 
 # Java Script tests
-pnpm exec xvfb-run -a --server-args="-screen 0 1024x768x24" vscode-test
+echo "Listing contents of out/test before running tests:"
+ls -la out/test
+# Ensure build.sh compiles test/runTest.ts into out/test/runTest.js
+pnpm exec xvfb-run -a --server-args="-screen 0 1024x768x24" node ./out/test/runTest.js

@@ -1,6 +1,9 @@
+/// <reference types="mocha" />
+
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 import * as sinon from 'sinon';
+// No explicit Mocha imports - rely on globals from test runner
 import { discoverAllTestsInWorkspace, IBazelTestAdapterWorkspaceInfo } from '../src/test-explorer/bazel_test_adapter';
 import { BazelWorkspaceInfo } from '../src/bazel/bazel_workspace_info';
 import { BazelQuery } from '../src/bazel/bazel_query';
@@ -49,8 +52,8 @@ function createStubTestController(): vscode.TestController {
         } as any),
         dispose: sinon.stub(),
         resolveHandler: undefined,
-        refreshHandler: undefined, // Can be undefined if not used by the code under test
-        invalidateTestResults: sinon.stub(), // Stub if it might be called
+        refreshHandler: undefined,
+        invalidateTestResults: sinon.stub(),
     };
     return controller;
 }
@@ -65,19 +68,19 @@ function createStubTestItemCollection(): vscode.TestItemCollection {
             itemsMap.clear();
             newItems.forEach(item => itemsMap.set(item.id, item));
         },
-        forEach: (callback: (item: vscode.TestItem) => void) => itemsMap.forEach(callback), // Corrected
+        forEach: (callback: (item: vscode.TestItem) => void) => itemsMap.forEach(callback),
         get size() { return itemsMap.size; }
     } as any;
     return collection;
 }
 
 
-suite('Bazel Test Adapter Tests', () => {
+describe('Bazel Test Adapter Tests', () => { // Using describe
     let mockController: vscode.TestController;
     let mockContext: vscode.ExtensionContext;
     let queryTargetsStub: sinon.SinonStub;
 
-    setup(() => {
+    beforeEach(() => { // Using beforeEach
         mockController = createStubTestController();
 
         const mementoMock: vscode.Memento = {
@@ -89,11 +92,11 @@ suite('Bazel Test Adapter Tests', () => {
         mockContext = {
             subscriptions: [],
             workspaceState: mementoMock,
-            globalState: { ...mementoMock, setKeysForSync: sinon.stub() } as any, // Cast for setKeysForSync
+            globalState: { ...mementoMock, setKeysForSync: sinon.stub() } as any,
             extensionPath: '/mock/extension/path',
-            storagePath: '/mock/storage/path', // Deprecated, use storageUri
-            globalStoragePath: '/mock/global/storage/path', // Deprecated, use globalStorageUri
-            logPath: '/mock/log/path', // Deprecated, use logUri
+            storagePath: '/mock/storage/path',
+            globalStoragePath: '/mock/global/storage/path',
+            logPath: '/mock/log/path',
             extensionUri: vscode.Uri.file('/mock/extension/path'),
             environmentVariableCollection: {} as any,
             extensionMode: vscode.ExtensionMode.Test,
@@ -110,35 +113,31 @@ suite('Bazel Test Adapter Tests', () => {
                 extensionKind: vscode.ExtensionKind.Workspace,
                 exports: {},
                 activate: sinon.stub().resolves()
-            } as any, // Cast to any for simplicity of mock
-            languageModelAccessInformation: undefined, // Add missing property
+            } as any,
+            languageModelAccessInformation: undefined,
         } as vscode.ExtensionContext;
 
         queryTargetsStub = sinon.stub(BazelQuery.prototype, 'queryTargets');
     });
 
-    teardown(() => {
+    afterEach(() => { // Using afterEach
         sinon.restore();
     });
 
-    test('Should discover tests and create hierarchy', async () => {
+    it('Should discover tests and create hierarchy', async () => { // Using it
         // Arrange
         const mockVSCodeWorkspaceFolder = { uri: vscode.Uri.file('/test/workspace'), name: 'workspace', index: 0 };
-
-        // Create a BazelWorkspaceInfo instance using the private constructor via 'as any' for testing purposes.
-        // This is because its static factory methods might involve file system checks we want to avoid in this unit test.
         const bazelWorkspaceInstance = new (BazelWorkspaceInfo as any)('/test/workspace', mockVSCodeWorkspaceFolder);
-
         const mockAdapterWorkspaceInfo: IBazelTestAdapterWorkspaceInfo = {
-            bazelWorkspace: bazelWorkspaceInstance, // This is the instance of BazelWorkspaceInfo
+            bazelWorkspace: bazelWorkspaceInstance,
             bazelExecutablePath: '/usr/bin/bazel',
             workspaceFolder: mockVSCodeWorkspaceFolder,
         };
 
-        const MOCK_QUERY_RESULT_HIERARCHY = blaze_query.QueryResult.create({
+        const MOCK_QUERY_RESULT_NESTED_HIERARCHY = blaze_query.QueryResult.create({
             target: [
                 blaze_query.Target.create({
-                    type: 1 as any, // Assuming 1 is RULE, cast as any for mock
+                    type: 1 as any, // RULE
                     rule: blaze_query.Rule.create({
                         name: '//pkg1:test_a',
                         ruleClass: 'cc_test',
@@ -146,66 +145,73 @@ suite('Bazel Test Adapter Tests', () => {
                     }),
                 }),
                 blaze_query.Target.create({
-                    type: 1 as any, // Assuming 1 is RULE
+                    type: 1 as any, // RULE
                     rule: blaze_query.Rule.create({
-                        name: '//pkg1:test_b',
+                        name: '//pkg1/subpkgA:test_sub_a',
                         ruleClass: 'py_test',
-                        location: '/test/workspace/pkg1/BUILD:12:1',
+                        location: '/test/workspace/pkg1/subpkgA/BUILD:3:1',
                     }),
                 }),
                 blaze_query.Target.create({
-                    type: 1 as any, // Assuming 1 is RULE
+                    type: 1 as any, // RULE
                     rule: blaze_query.Rule.create({
                         name: '//pkg2:test_c',
                         ruleClass: 'sh_test',
-                        location: '/test/workspace/pkg2/BUILD.bazel:3:1',
+                        location: '/test/workspace/pkg2/BUILD.bazel:7:1',
                     }),
                 }),
             ],
         });
-        queryTargetsStub.resolves(MOCK_QUERY_RESULT_HIERARCHY);
+        queryTargetsStub.resolves(MOCK_QUERY_RESULT_NESTED_HIERARCHY);
 
         // Act
         await discoverAllTestsInWorkspace(mockController, mockAdapterWorkspaceInfo, mockContext);
 
         // Assert
-        assert.strictEqual(mockController.items.size, 2, 'Should have 2 package items');
+        assert.strictEqual(mockController.items.size, 2, 'Should have 2 top-level package items: //pkg1 and //pkg2');
 
         const pkg1Item = mockController.items.get('//pkg1');
         assert.ok(pkg1Item, 'Package //pkg1 should exist');
         if (pkg1Item) {
             assert.strictEqual(pkg1Item.label, 'pkg1', 'Package //pkg1 label should be "pkg1"');
-            assert.strictEqual(pkg1Item.children.size, 2, 'Package //pkg1 should have 2 test items');
+            assert.strictEqual(pkg1Item.children.size, 2, 'Package //pkg1 should have 2 children: test_a and subpkgA');
 
             const testAItem = pkg1Item.children.get('//pkg1:test_a');
-            assert.ok(testAItem, 'Test //pkg1:test_a should exist');
+            assert.ok(testAItem, 'Test //pkg1:test_a should exist as a child of //pkg1');
             if (testAItem) {
-                assert.strictEqual(testAItem.label, 'test_a', 'Label for test_a should be "test_a"');
-                assert.strictEqual(testAItem.uri?.fsPath, vscode.Uri.file('/test/workspace/pkg1/BUILD').fsPath, 'URI for test_a should point to its BUILD file');
-                assert.deepStrictEqual(testAItem.range, new vscode.Range(4, 0, 4, 0), 'Range for test_a incorrect (line 5:1 -> 0-indexed 4, char 0)');
+                assert.strictEqual(testAItem.label, 'test_a');
+                assert.strictEqual(testAItem.uri?.fsPath, vscode.Uri.file('/test/workspace/pkg1/BUILD').fsPath);
+                assert.deepStrictEqual(testAItem.range, new vscode.Range(4, 0, 4, 0));
             }
 
-            const testBItem = pkg1Item.children.get('//pkg1:test_b');
-            assert.ok(testBItem, 'Test //pkg1:test_b should exist');
-            if (testBItem) {
-                assert.strictEqual(testBItem.label, 'test_b', 'Label for test_b should be "test_b"');
-                assert.strictEqual(testBItem.uri?.fsPath, vscode.Uri.file('/test/workspace/pkg1/BUILD').fsPath, 'URI for test_b should point to its BUILD file');
-                assert.deepStrictEqual(testBItem.range, new vscode.Range(11, 0, 11, 0), 'Range for test_b incorrect (line 12:1 -> 0-indexed 11, char 0)');
+            const subPkgAItem = pkg1Item.children.get('//pkg1/subpkgA');
+            assert.ok(subPkgAItem, 'Sub-package //pkg1/subpkgA should exist as a child of //pkg1');
+            if (subPkgAItem) {
+                assert.strictEqual(subPkgAItem.label, 'subpkgA', 'Label for //pkg1/subpkgA item should be subpkgA');
+                assert.strictEqual(subPkgAItem.uri?.fsPath, vscode.Uri.file('/test/workspace/pkg1/subpkgA').fsPath, 'URI for sub-package item should point to its directory');
+                assert.strictEqual(subPkgAItem.children.size, 1, 'Sub-package //pkg1/subpkgA should have 1 test item child');
+
+                const testSubAItem = subPkgAItem.children.get('//pkg1/subpkgA:test_sub_a');
+                assert.ok(testSubAItem, 'Test //pkg1/subpkgA:test_sub_a should exist as a child of //pkg1/subpkgA');
+                if (testSubAItem) {
+                    assert.strictEqual(testSubAItem.label, 'test_sub_a');
+                    assert.strictEqual(testSubAItem.uri?.fsPath, vscode.Uri.file('/test/workspace/pkg1/subpkgA/BUILD').fsPath);
+                    assert.deepStrictEqual(testSubAItem.range, new vscode.Range(2, 0, 2, 0)); // Line 3:1
+                }
             }
         }
 
         const pkg2Item = mockController.items.get('//pkg2');
         assert.ok(pkg2Item, 'Package //pkg2 should exist');
         if (pkg2Item) {
-            assert.strictEqual(pkg2Item.label, 'pkg2', 'Package //pkg2 label should be "pkg2"');
+            assert.strictEqual(pkg2Item.label, 'pkg2');
             assert.strictEqual(pkg2Item.children.size, 1, 'Package //pkg2 should have 1 test item');
-
             const testCItem = pkg2Item.children.get('//pkg2:test_c');
             assert.ok(testCItem, 'Test //pkg2:test_c should exist');
             if (testCItem) {
-                assert.strictEqual(testCItem.label, 'test_c', 'Label for test_c should be "test_c"');
-                assert.strictEqual(testCItem.uri?.fsPath, vscode.Uri.file('/test/workspace/pkg2/BUILD.bazel').fsPath, 'URI for test_c should point to its BUILD.bazel file');
-                assert.deepStrictEqual(testCItem.range, new vscode.Range(2, 0, 2, 0), 'Range for test_c incorrect (line 3:1 -> 0-indexed 2, char 0)');
+                assert.strictEqual(testCItem.label, 'test_c');
+                assert.strictEqual(testCItem.uri?.fsPath, vscode.Uri.file('/test/workspace/pkg2/BUILD.bazel').fsPath);
+                assert.deepStrictEqual(testCItem.range, new vscode.Range(6, 0, 6, 0)); // Line 7:1
             }
         }
     });
