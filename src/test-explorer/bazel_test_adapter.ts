@@ -286,28 +286,35 @@ export function activateBazelTests(context: vscode.ExtensionContext): void {
           let overallTargetSuccess = true;
 
           if (code === 0 || code === 3) {
-            try {
-              const bazelInfo = new BazelInfo(adapterInfo.bazelExecutablePath, adapterInfo.workspaceFolder.uri.fsPath);
-              const testlogsPath = await bazelInfo.getOne('bazel-testlogs');
+            // Construct path to test.xml using the bazel-testlogs symlink
+            const symlinkTestlogsPath = path.join(adapterInfo.workspaceFolder.uri.fsPath, 'bazel-testlogs');
+            let effectiveLabel = bazelLabel;
 
-              if (testlogsPath) {
-                let effectiveLabel = bazelLabel;
-                if (effectiveLabel.startsWith('@')) {
-                  effectiveLabel = effectiveLabel.substring(effectiveLabel.indexOf('//') + 2);
-                   console.warn(`External repo label ${bazelLabel} - test.xml path construction might be inaccurate.`);
-                } else if (effectiveLabel.startsWith('//')) {
-                  effectiveLabel = effectiveLabel.substring(2);
-                }
+            if (effectiveLabel.startsWith('@')) {
+              // Handle external repo labels by trying to map them to a path under bazel-testlogs/external/...
+              // This is an approximation. The exact structure can vary.
+              const repoNameEnd = effectiveLabel.indexOf('//');
+              if (repoNameEnd > 1) {
+                const repoName = effectiveLabel.substring(1, repoNameEnd);
+                effectiveLabel = `external/${repoName}/${effectiveLabel.substring(repoNameEnd + 2)}`;
+              } else {
+                 // Fallback for malformed external labels, or treat as non-external.
+                 effectiveLabel = effectiveLabel.startsWith('//') ? effectiveLabel.substring(2) : effectiveLabel;
+              }
+               console.warn(`External repo label ${bazelLabel} - test.xml path construction might be inaccurate using symlink.`);
+            } else if (effectiveLabel.startsWith('//')) {
+              effectiveLabel = effectiveLabel.substring(2);
+            }
 
-                const parts = effectiveLabel.split(':');
-                if (parts.length === 2) {
-                  const packagePathForXml = parts[0];
-                  const targetName = parts[1];
-                  const xmlPath = path.join(testlogsPath, packagePathForXml, targetName, 'test.xml');
-                  logTestOutput(run, `Attempting to read test.xml from: ${xmlPath}`, testItem);
+            const parts = effectiveLabel.split(':');
+            if (parts.length === 2) {
+              const packagePathForXml = parts[0]; // This is now relative path like "foo/bar"
+              const targetName = parts[1];
+              const xmlPath = path.join(symlinkTestlogsPath, packagePathForXml, targetName, 'test.xml');
+              logTestOutput(run, `Attempting to read test.xml using symlink path: ${xmlPath}`, testItem);
 
-                  try {
-                    const xmlContent = await vscode.workspace.fs.readFile(vscode.Uri.file(xmlPath));
+              try {
+                const xmlContent = await vscode.workspace.fs.readFile(vscode.Uri.file(xmlPath));
                     const parsedXml = await xml2js.parseStringPromise(xmlContent.toString());
                     logTestOutput(run, `Successfully parsed ${xmlPath}`, testItem);
 
@@ -358,23 +365,19 @@ export function activateBazelTests(context: vscode.ExtensionContext): void {
                       logTestOutput(run, `No testsuites found in ${xmlPath}. Structure: ${Object.keys(parsedXml)}`, testItem);
                       if (code === 0) overallTargetSuccess = false;
                     }
-                  } catch (e: any) {
+                  } catch (e: any) { // This catch is for XML parsing / processing
                     logTestOutput(run, `Error processing test.xml from ${xmlPath}: ${e.message}`, testItem);
                     overallTargetSuccess = false;
                   }
-                } else {
+                } else { // This else is for parts.length !== 2
                   logTestOutput(run, `Could not parse package and target from label: ${bazelLabel} to find test.xml`, testItem);
                   overallTargetSuccess = false;
                 }
-              } else {
-                logTestOutput(run, 'Warning: bazel-testlogs path not found, cannot locate test.xml.', testItem);
-                if (code === 0) overallTargetSuccess = false;
-              }
-            } catch (err: any) {
-              logTestOutput(run, `Error getting bazel-testlogs or processing XML: ${err.message}`, testItem);
-              overallTargetSuccess = false;
-            }
+            // Removed the try-catch block that was specific to BazelInfo call
+            // The file system access for test.xml is handled by its own try-catch now.
+            // If xmlPath cannot be determined or read, overallTargetSuccess will be false.
           }
+
 
           if (token.isCancellationRequested) {
             run.skipped(testItem);
