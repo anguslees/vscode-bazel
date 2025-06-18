@@ -21,10 +21,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." > /dev/null
 
 # If tests are eventually added for other things, this line should probably
 # be replaced by just running scripts/build.sh.
-js-yaml syntaxes/bazelrc.tmLanguage.yaml > syntaxes/bazelrc.tmLanguage.json
+pnpm exec js-yaml syntaxes/bazelrc.tmLanguage.yaml > syntaxes/bazelrc.tmLanguage.json
 
 # Regression test for bazelrc grammar
-vscode-tmgrammar-snap "$@" test/example.bazelrc
+pnpm exec vscode-tmgrammar-snap "$@" test/example.bazelrc
 
 # Java Script tests
-vscode-test
+pnpm exec xvfb-run -a --server-args="-screen 0 1024x768x24" vscode-test

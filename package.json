@@ -31,7 +31,9 @@
         "onCommand:bazel.info.execution_root",
         "onCommand:bazel.info.output_base",
         "onCommand:bazel.info.output_path",
-        "onCommand:bazel.info.workspace"
+        "onCommand:bazel.info.workspace",
+        "onResolveActivity:bazelTests",
+        "onResolveActivity:bazel-coverage-controller"
     ],
     "main": "./out/src/extension/extension",
     "contributes": {
@@ -491,6 +493,7 @@
     "devDependencies": {
         "@types/mocha": "^10.0.6",
         "@types/node": "^16.11.7",
+        "@types/sinon": "^17.0.3",
         "@types/vscode": "^1.88.0",
         "@types/which": "^3.0.3",
         "@types/xml2js": "^0.4.14",
@@ -503,6 +506,7 @@
         "js-yaml": "^4.1.0",
         "mocha": "^10.8.2",
         "prettier": "^3.2.5",
+        "sinon": "^17.0.1",
         "typescript": "^5.4.4",
         "typescript-eslint": "^7.5.0",
         "vscode-tmgrammar-test": "^0.1.3"

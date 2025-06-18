@@ -107,6 +107,30 @@ Bazel tasks can be configured from the `tasks.json` using the following structur
 }
 ```
 
+## Test Explorer Integration
+
+This extension integrates with VS Code's native Test Explorer, allowing you to discover, run, and (soon) debug your Bazel tests directly from the Test UI.
+
+### Features:
+- **Test Discovery**: Bazel test targets (e.g., `cc_test`, `py_test`, `sh_test`) defined in your `BUILD` and `BUILD.bazel` files are automatically discovered and displayed in the Test Explorer view. Tests are organized hierarchically by their Bazel package.
+- **Run Tests**:
+  - Click the run icon next to a test target or package in the Test Explorer to execute it.
+  - Output from `bazel test` is streamed to the VS Code output panel for that test run.
+  - Results are shown for individual test cases within a target (e.g., methods in a test class) by parsing the `test.xml` output.
+- **View Test Source**: Click on a test target in the explorer to navigate to its definition in the corresponding BUILD file.
+- **Automatic Updates**: The test list automatically refreshes if you create, delete, or modify BUILD or relevant `.bzl` files.
+- **Configuration**: Test execution respects your configured Bazel command-line options, such as `bazel.commandLine.startupOptions` and `bazel.commandLine.commandArgs`.
+
+### Debugging Tests (Proof-of-Concept):
+- Basic debugging support is available for `py_test` targets.
+- Select a single Python test target and click the "Debug" icon next to it in the Test Explorer.
+- This will attempt to launch the test under `debugpy` and attach the VS Code Python debugger.
+- **Note**: This is an early feature. Path mappings might need adjustment, and support for other languages will be added progressively. Ensure your Python environment and `rules_python` are configured to allow `debugpy` to listen on a port.
+
+### Known Limitations:
+- Debugging support is currently limited to Python tests and is considered experimental.
+- While `test.xml` parsing provides detailed results for many common test types, very complex test structures or custom test runners might not be fully represented.
+
 ## Coverage support (Experimental)
 
 For all `coverage` tasks, the coverage results are automatically loaded into VS
