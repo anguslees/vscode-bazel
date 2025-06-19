@@ -10,7 +10,7 @@ import { blaze_query } from '../protos';
 let moduleBazelTestController: vscode.TestController;
 export const testItemData = new WeakMap<vscode.TestItem, { bazelLabel: string, kind: string, package: string }>();
 // Module-scoped map to keep track of package TestItems for efficient updates.
-let packagesMap = new Map<string, vscode.TestItem>();
+export let packagesMap = new Map<string, vscode.TestItem>(); // Export for test access
 
 export interface IBazelTestAdapterWorkspaceInfo {
   bazelWorkspace: BazelWorkspaceInfo;
@@ -251,25 +251,27 @@ export const runHandler = async (
     if (request.include) {
       request.include.forEach(item => queue.push(item));
     } else {
-      const collectAllLeafTests = (item: vscode.TestItem, collection: vscode.TestItem[]) => {
-          if (item.children.size === 0 && !item.canResolveChildren) {
-              collection.push(item);
-          } else {
-              item.children.forEach(child => collectAllLeafTests(child, collection));
-          }
+      // If no specific items are requested, run all "leaf" tests that are actual Bazel targets.
+      const collectAllRunnableTests = (item: vscode.TestItem, collection: vscode.TestItem[]) => {
+            const data = currentTestItemData.get(item);
+            if (data && data.kind !== 'package' && data.kind !== 'testcase') {
+                // This is a runnable Bazel target rule
+                console.log(`[CollectForRun] Adding: ${item.id}, kind: ${data.kind}`);
+                collection.push(item);
+            } else if (data && data.kind === 'package') {
+                // This is a package, recurse into its children
+                item.children.forEach(child => collectAllRunnableTests(child, collection));
+            }
+            // Do not add 'testcase' items directly, and do not recurse into children of runnable targets
+            // (which would be 'testcase' items after XML parsing).
       };
-      controller.items.forEach(pkgOrTestItem => collectAllLeafTests(pkgOrTestItem, queue));
+      controller.items.forEach(pkgOrTestItem => collectAllRunnableTests(pkgOrTestItem, queue));
     }
 
-    // Iterate the original queue of items requested for the run.
-    for (const testItem of queue) {
-      if (token.isCancellationRequested) {
-        run.skipped(testItem);
-        continue;
-      }
+    const testsToRun = queue.filter(testItem => !request.exclude?.includes(testItem));
 
-      // Handle excluded items
-      if (request.exclude?.includes(testItem)) {
+    for (const testItem of testsToRun) {
+      if (token.isCancellationRequested) {
         run.skipped(testItem);
         continue;
       }
@@ -282,15 +284,15 @@ export const runHandler = async (
         continue;
       }
 
-      // Skip package-level items if they somehow end up in a direct run request.
-      // Actual tests should have a 'kind' that's not 'package'.
-      if (testData.kind === 'package') {
-        logTestOutput(run, `Skipping package item in run queue: ${testItem.id}`, testItem);
-        run.skipped(testItem);
-        continue;
+      // Corrected check for skippable items
+      if (testData.kind === 'package' || testData.kind === 'testcase') {
+          logTestOutput(run, `[RunLoop] Skipping non-runnable item: ${testItem.id} (kind: ${testData.kind})`, testItem);
+          run.skipped(testItem);
+          continue;
       }
 
-      const { bazelLabel } = testData;
+      const { bazelLabel, kind } = testData; // Destructure after the check
+      console.log(`[RunLoop] Preparing to run: ${bazelLabel}, kind: ${kind}`);
       const startTime = Date.now();
 
       logTestOutput(run, `Executing: bazel test ${bazelLabel}\r\n`, testItem);
@@ -569,18 +571,28 @@ export function activateBazelTests(context: vscode.ExtensionContext): void {
 
 // Helper to determine Bazel package path from a file URI
 function determinePackagePathFromUri(uri: vscode.Uri, adapterInfo: IBazelTestAdapterWorkspaceInfo): string | undefined {
-    const workspaceFolderUri = adapterInfo.workspaceFolder.uri;
-    if (!uri.fsPath.startsWith(workspaceFolderUri.fsPath)) {
-        console.warn(`File ${uri.fsPath} is not within workspace ${workspaceFolderUri.fsPath}`);
+    const workspaceRootPath = adapterInfo.workspaceFolder.uri.fsPath;
+    const filePath = uri.fsPath;
+
+    if (!filePath.startsWith(workspaceRootPath)) {
+        console.warn(`File ${filePath} is not within workspace ${workspaceRootPath}`);
         return undefined;
     }
-    // vscode.workspace.asRelativePath is good but might need adjustment if uri is the workspaceFolder itself.
-    // For a file *inside* a package, path.dirname(relative) gives the package dir.
-    const relativePath = path.dirname(vscode.workspace.asRelativePath(uri, false));
-    if (relativePath === '.') { // File is in workspace root
-        return '//'; // Or specific handling for root package if tests can be there
+
+    // Get path of the directory containing the BUILD file, relative to workspace root
+    let relativeDirPath = path.dirname(filePath.substring(workspaceRootPath.length));
+
+    // Normalize: remove leading slash if present, handle Windows separators
+    if (relativeDirPath.startsWith(path.sep)) {
+        relativeDirPath = relativeDirPath.substring(1);
     }
-    return `//${relativePath.replace(/\\/g, '/')}`;
+    relativeDirPath = relativeDirPath.replace(/\\/g, '/'); // Ensure forward slashes for Bazel
+
+    if (relativeDirPath === '.' || relativeDirPath === '') {
+        return '//'; // Package in workspace root
+    }
+
+    return `//${relativeDirPath}`;
 }
 
 

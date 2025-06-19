@@ -5,13 +5,15 @@ import * as vscode from 'vscode';
 import * as sinon from 'sinon';
 import * as path from 'path';
 import * as child_process from 'child_process';
+import * as fs from 'fs'; // Import fs for stubbing
 import {
     discoverAllTestsInWorkspace,
     IBazelTestAdapterWorkspaceInfo,
-    // getBazelTestAdapterWorkspaceInfo, // No longer directly used in top-level describe, stubbed via BTA module
+    // getBazelTestAdapterWorkspaceInfo, (now injected for runHandler)
     testItemData,
     runHandler,
-    TestExplorerFs // Import the interface
+    TestExplorerFs,
+    packagesMap as SUTPackagesMap // Import to clear it
 } from '../src/test-explorer/bazel_test_adapter';
 import { BazelWorkspaceInfo } from '../src/bazel/bazel_workspace_info';
 import { BazelQuery } from '../src/bazel/bazel_query';
@@ -93,14 +95,18 @@ let getWorkspaceInfoStub: sinon.SinonStub; // Keep declaration here, but initial
 describe('Bazel Test Adapter Tests', () => {
     let mockController: vscode.TestController;
     let mockContext: vscode.ExtensionContext;
-    let queryTargetsStub: sinon.SinonStub;
-    let spawnStub: sinon.SinonStub;
+    let spawnStub: sinon.SinonStub; // queryTargetsStub removed from global scope
 
     beforeEach(() => {
         mockController = createStubTestController();
 
         const mementoMock: vscode.Memento = {
-            get: sinon.stub().returns(undefined),
+            get: sinon.stub().callsFake((key: string, defaultValue?: any) => {
+                if (typeof defaultValue !== 'undefined') {
+                    return defaultValue;
+                }
+                return undefined;
+            }) as vscode.Memento['get'],
             update: sinon.stub().resolves(),
             keys: sinon.stub().returns([])
         };
@@ -133,23 +139,24 @@ describe('Bazel Test Adapter Tests', () => {
             languageModelAccessInformation: undefined,
         } as vscode.ExtensionContext;
 
-        queryTargetsStub = sinon.stub(BazelQuery.prototype, 'queryTargets');
+        // spawnStub can be initialized here as it's generally used across different test types (run, debug)
         spawnStub = sinon.stub(child_process, 'spawn');
 
-        // DO NOT Initialize getWorkspaceInfoStub here. It will be done in runHandler's beforeEach.
+        // queryTargetsStub and getWorkspaceInfoStub are more specific and will be handled in nested suites
     });
 
     afterEach(() => {
-        sinon.restore(); // This will restore all stubs, including getWorkspaceInfoStub if created.
+        sinon.restore();
     });
 
     describe('discoverAllTestsInWorkspace', () => {
-        // This test needs its own getWorkspaceInfoStub if it calls the function directly or indirectly.
-        // For now, assuming discoverAllTestsInWorkspace is self-contained or uses a passed-in adapterInfo.
-        // If it internally calls BTA.getBazelTestAdapterWorkspaceInfo, it would need:
-        // beforeEach(() => { getWorkspaceInfoStub = sinon.stub(BTA, 'getBazelTestAdapterWorkspaceInfo'); });
+        let queryTargetsStub: sinon.SinonStub; // Suite-specific stub
+
+        beforeEach(() => {
+            queryTargetsStub = sinon.stub(BazelQuery.prototype, 'queryTargets');
+        });
+
         it('Should discover tests and create hierarchy', async () => {
-            // This test directly passes mockAdapterWorkspaceInfo, so it doesn't rely on the global stub for BTA.getBazelTestAdapterWorkspaceInfo
             const mockVSCodeWorkspaceFolder = { uri: vscode.Uri.file('/test/workspace'), name: 'workspace', index: 0 };
             const bazelWorkspaceInstance = new (BazelWorkspaceInfo as any)('/test/workspace', mockVSCodeWorkspaceFolder);
             const mockAdapterWorkspaceInfo: IBazelTestAdapterWorkspaceInfo = {
@@ -445,4 +452,217 @@ describe('Bazel Test Adapter Tests', () => {
             sinon.assert.calledOnce(mockTestRunInterface.end as sinon.SinonStub);
         });
     });
+});
+
+
+describe('File Watcher Granular Updates', () => {
+    let mockAdapterWorkspaceInfo: IBazelTestAdapterWorkspaceInfo;
+    let mockContextForWatcher: vscode.ExtensionContext;
+    let fileWatcherQueryTargetsStub: sinon.SinonStub; // Use a distinct name to avoid confusion
+    let sutsModuleBazelTestController: vscode.TestController;
+
+    type MockWatcherInstance = {
+        onDidChange: sinon.SinonStub;
+        onDidCreate: sinon.SinonStub;
+        onDidDelete: sinon.SinonStub;
+        dispose: sinon.SinonStub;
+        ignoreCreateEvents: boolean;
+        ignoreChangeEvents: boolean;
+        ignoreDeleteEvents: boolean;
+    };
+    let mockWatcherInstance: MockWatcherInstance;
+    let createWatcherStub: sinon.SinonStub;
+    let capturedOnChange: (uri: vscode.Uri) => Promise<void>;
+    let statSyncStub: sinon.SinonStub;
+
+    beforeEach(() => {
+        // Stub fs.statSync before BazelWorkspaceInfo.fromWorkspaceFolder is called
+        statSyncStub = sinon.stub(fs, 'statSync');
+        statSyncStub.callsFake((pathToCheck: fs.PathLike) => {
+            const pathString = pathToCheck.toString();
+            // Simulate workspace root and common marker files as existing
+            if (pathString === '/test/workspace' ||
+                pathString === path.join('/test/workspace', 'WORKSPACE') ||
+                pathString === path.join('/test/workspace', 'MODULE.bazel') ||
+                pathString === path.join('/test/workspace', 'WORKSPACE.bazel')) {
+                return {
+                    isFile: () => pathString !== '/test/workspace',
+                    isDirectory: () => pathString === '/test/workspace'
+                } as fs.Stats;
+            }
+            // For any other path, throw ENOENT to simulate it not existing.
+            const error: NodeJS.ErrnoException = new Error(`ENOENT: no such file or directory, stat '${pathString}'`);
+            error.code = 'ENOENT';
+            throw error;
+        });
+
+        const mementoMock = {
+            get: sinon.stub().callsFake((key: string, defaultValue?: any) => {
+                if (typeof defaultValue !== 'undefined') return defaultValue;
+                return undefined;
+            }) as vscode.Memento['get'],
+            update: sinon.stub().resolves(),
+            keys: sinon.stub().returns([])
+        };
+        const mockSubscriptions: vscode.Disposable[] = []; // Must be an array
+        mockContextForWatcher = { // Use distinct name
+            subscriptions: mockSubscriptions,
+            workspaceState: mementoMock,
+            globalState: mementoMock as any, // Cast for simplicity, ensure all methods if used
+            extensionPath: '/mock/extension/path',
+            storagePath: '/mock/storage/path',
+            globalStoragePath: '/mock/global/storage/path',
+            logPath: '/mock/log/path',
+            extensionUri: vscode.Uri.file('/mock/extension/path'),
+            environmentVariableCollection: {} as any,
+            extensionMode: vscode.ExtensionMode.Test,
+            storageUri: vscode.Uri.file('/mock/storage/path'),
+            globalStorageUri: vscode.Uri.file('/mock/global/storage/path'),
+            logUri: vscode.Uri.file('/mock/log/path'),
+            secrets: { get: sinon.stub(), store: sinon.stub(), delete: sinon.stub(), onDidChange: new vscode.EventEmitter<vscode.SecretStorageChangeEvent>().event },
+            asAbsolutePath: (relativePath: string) => `/mock/extension/path/${relativePath}`,
+            extension: {
+                id: 'mock.extension.id', extensionPath: '/mock/extension/path', isActive: true,
+                packageJSON: { name: 'mock-ext', version: '0.0.1', publisher: 'mock', engines: {} },
+                extensionKind: vscode.ExtensionKind.Workspace, exports: {}, activate: sinon.stub().resolves()
+            } as any,
+            languageModelAccessInformation: undefined,
+        } as vscode.ExtensionContext;
+
+        // Mock workspace info
+        const mockVSCodeWorkspaceFolder = { uri: vscode.Uri.file('/test/workspace'), name: 'workspace', index: 0 };
+        mockAdapterWorkspaceInfo = {
+            bazelWorkspace: BazelWorkspaceInfo.fromWorkspaceFolder(mockVSCodeWorkspaceFolder)!,
+            bazelExecutablePath: '/usr/bin/bazel',
+            workspaceFolder: mockVSCodeWorkspaceFolder,
+        };
+
+        // Stub getBazelTestAdapterWorkspaceInfo to return our mock
+        // This is a module-level stub, ensure it's managed correctly (e.g. via sinon.restore() in afterEach)
+        // getWorkspaceInfoStub is declared globally in the file.
+        getWorkspaceInfoStub = sinon.stub(BTA, 'getBazelTestAdapterWorkspaceInfo');
+        getWorkspaceInfoStub.returns(mockAdapterWorkspaceInfo);
+
+        // Initialize the suite-specific queryTargetsStub
+        fileWatcherQueryTargetsStub = sinon.stub(BazelQuery.prototype, 'queryTargets');
+        // No default .callsFake or .throws for this iteration.
+
+        mockWatcherInstance = {
+            onDidChange: sinon.stub(),
+            onDidCreate: sinon.stub(),
+            onDidDelete: sinon.stub(),
+            dispose: sinon.stub(),
+            ignoreCreateEvents: false,
+            ignoreChangeEvents: false,
+            ignoreDeleteEvents: false,
+        };
+        createWatcherStub = sinon.stub(vscode.workspace, 'createFileSystemWatcher').returns(mockWatcherInstance as any);
+
+        BTA.activateBazelTests(mockContextForWatcher); // Use the correctly typed context
+        sutsModuleBazelTestController = BTA.getBazelTestController();
+
+        if (mockWatcherInstance.onDidChange.called && mockWatcherInstance.onDidChange.firstCall.args.length > 0) {
+            capturedOnChange = mockWatcherInstance.onDidChange.firstCall.args[0];
+        } else {
+            mockWatcherInstance.onDidChange.callsFake(callback => { capturedOnChange = callback; });
+        }
+    });
+
+    afterEach(() => {
+        sinon.restore();
+        SUTPackagesMap.clear(); // Clear the imported packagesMap
+    });
+
+    it('onDidChange BUILD file - should add a new test', async () => {
+        const initialDiscoverResult = blaze_query.QueryResult.create({
+            target: [
+                blaze_query.Target.create({
+                    type: 1,
+                    rule: blaze_query.Rule.create({
+                        name: '//pkg1:test_a',
+                        ruleClass: 'cc_test',
+                        location: path.join(mockAdapterWorkspaceInfo.workspaceFolder.uri.fsPath, 'pkg1', 'BUILD') + ':5:1',
+                    }),
+                }),
+            ],
+        });
+
+        let actualInitialQueryArg: string | undefined;
+        fileWatcherQueryTargetsStub.callsFake((query: string) => {
+            if (query === 'kind(".*_test rule", //...)') { // The first expected call
+                actualInitialQueryArg = query;
+                return Promise.resolve(initialDiscoverResult);
+            }
+            // For the subsequent call by updateTestsInPackage for //pkg1:all
+            if (query === 'kind(".*_test rule", //pkg1:all)') {
+                // This is defined later in the test, but the fake needs to anticipate it.
+                // The specific pkg1UpdateResult will be set on the stub using withArgs later.
+                // For now, just ensure it doesn't throw if called.
+                const ruleAUpdated = blaze_query.Rule.create({
+                    name: '//pkg1:test_a', ruleClass: 'cc_test',
+                    location: path.join(mockAdapterWorkspaceInfo.workspaceFolder.uri.fsPath, 'pkg1', 'BUILD') + ':8:1',
+                });
+                const ruleBNew = blaze_query.Rule.create({
+                    name: '//pkg1:test_b', ruleClass: 'py_test',
+                    location: path.join(mockAdapterWorkspaceInfo.workspaceFolder.uri.fsPath, 'pkg1', 'BUILD') + ':15:1',
+                });
+                const tempPkg1UpdateResult = blaze_query.QueryResult.create({ target: [
+                    blaze_query.Target.create({ type: 1, rule: ruleAUpdated }),
+                    blaze_query.Target.create({ type: 1, rule: ruleBNew }),
+                ]});
+                return Promise.resolve(tempPkg1UpdateResult);
+            }
+            const actualArgs = `Actual query: '${query}'`;
+            throw new Error(`QUERY_TARGETS_UNEXPECTED_CALL_DETAILS_IN_FAKE: ${actualArgs}`);
+        });
+
+        await sutsModuleBazelTestController.resolveHandler!(undefined);
+
+        assert.strictEqual(actualInitialQueryArg, 'kind(".*_test rule", //...)', `Initial discovery query was: ${actualInitialQueryArg}`);
+
+        let pkg1Item = sutsModuleBazelTestController.items.get('//pkg1');
+        assert.ok(pkg1Item, "Package //pkg1 should exist after initial discovery");
+        assert.strictEqual(pkg1Item!.children.size, 1, "Package //pkg1 should have 1 test initially");
+        assert.ok(pkg1Item!.children.get('//pkg1:test_a'), "Test //pkg1:test_a should exist initially");
+
+        const ruleAUpdated = blaze_query.Rule.create({
+            name: '//pkg1:test_a', ruleClass: 'cc_test',
+            location: path.join(mockAdapterWorkspaceInfo.workspaceFolder.uri.fsPath, 'pkg1', 'BUILD') + ':8:1', // Line changed
+        });
+        const ruleBNew = blaze_query.Rule.create({
+            name: '//pkg1:test_b', ruleClass: 'py_test',
+            location: path.join(mockAdapterWorkspaceInfo.workspaceFolder.uri.fsPath, 'pkg1', 'BUILD') + ':15:1',
+        });
+        const pkg1UpdateResult = blaze_query.QueryResult.create({ target: [
+            blaze_query.Target.create({ type: 1, rule: ruleAUpdated }),
+            blaze_query.Target.create({ type: 1, rule: ruleBNew }),
+        ]});
+        fileWatcherQueryTargetsStub.withArgs('kind(".*_test rule", //pkg1:all)').resolves(pkg1UpdateResult);
+
+        // 3. Act: Simulate BUILD file change
+        const buildFileUri = vscode.Uri.file(path.join(mockAdapterWorkspaceInfo.workspaceFolder.uri.fsPath, 'pkg1', 'BUILD'));
+        assert.ok(capturedOnChange, "onDidChange callback should have been captured");
+        await capturedOnChange(buildFileUri);
+
+        // 4. Assert: Check for new and updated tests
+        pkg1Item = sutsModuleBazelTestController.items.get('//pkg1'); // Re-fetch
+        assert.ok(pkg1Item, "Package //pkg1 should still exist");
+        assert.strictEqual(pkg1Item!.children.size, 2, "Package //pkg1 should now have 2 tests");
+
+        const testAItemUpdated = pkg1Item!.children.get('//pkg1:test_a');
+        assert.ok(testAItemUpdated, "Test //pkg1:test_a should still exist");
+        assert.strictEqual(testAItemUpdated!.range?.start.line, 7, "Test //pkg1:test_a range should be updated"); // 8 - 1
+
+        const testBItemNew = pkg1Item!.children.get('//pkg1:test_b');
+        assert.ok(testBItemNew, "New test //pkg1:test_b should exist");
+        assert.strictEqual(testBItemNew!.label, 'test_b');
+        assert.strictEqual(testBItemNew!.range?.start.line, 14, "Test //pkg1:test_b range should be correct"); // 15 - 1
+    });
+
+    // TODO: Add more tests:
+    // - onDidChange BUILD file - should remove a test
+    // - onDidChange BUILD file - should update an existing test (e.g. line number change)
+    // - onDidChange .bzl file - should trigger full refresh
+    // - onDidCreate BUILD file - should add new package and its tests
+    // - onDidDelete BUILD file - should remove package and its tests
 });
