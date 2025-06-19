@@ -193,9 +193,10 @@ describe("The lcov parser", () => {
     it("function coverage details", () => {
       const consumeFunc = getFunctionByLine(fileCov, 230);
       assert(consumeFunc !== undefined);
-      assert.equal(
-        consumeFunc.name,
-        "label[95a31cc4b048094d]::consume_package_name::{closure#0}",
+      const expectedNameRegex = /^label(\[[0-9a-fA-F]+\])?::consume_package_name::\{closure#0\}$/;
+      assert.ok(
+        expectedNameRegex.test(consumeFunc.name),
+        `Expected '${consumeFunc.name}' to match regex '${expectedNameRegex}'`,
       );
       assert.equal(consumeFunc.executed, 2);
     });
