@@ -114,10 +114,10 @@ export async function queryQuickPickTargets({
   ).queryTargets(query ?? "//...:*");
 
   // Sort the labels so the QuickPick is ordered.
-  const labels = queryResult.target.map((target) => target.rule.name);
+  const labels = queryResult.target.map((target: any) => target.rule.name);
   labels.sort();
   return labels.map(
-    (target) => new BazelTargetQuickPick(target, workspaceInfo),
+    (target: any) => new BazelTargetQuickPick(target, workspaceInfo),
   );
 }
 

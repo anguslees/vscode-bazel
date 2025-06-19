@@ -195,7 +195,7 @@ describe("The lcov parser", () => {
       assert(consumeFunc !== undefined);
       assert.equal(
         consumeFunc.name,
-        "label::consume_package_name::{closure#0}",
+        "label[95a31cc4b048094d]::consume_package_name::{closure#0}",
       );
       assert.equal(consumeFunc.executed, 2);
     });

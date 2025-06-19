@@ -11,6 +11,7 @@
         "strict": true,
         "strictNullChecks": false,
         "allowJs": true,
+        "esModuleInterop": true,
     },
     "exclude": [
         "node_modules",

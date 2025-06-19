@@ -132,8 +132,8 @@ export class BazelBuildCodeLensProvider implements vscode.CodeLensProvider {
     }
 
     const useTargetMap = queryResult.target
-      .map((t) => new QueryLocation(t.rule.location).line)
-      .reduce((countMap, line) => {
+      .map((t: any) => new QueryLocation(t.rule.location).line)
+      .reduce((countMap: any, line: any) => {
         countMap.set(line, countMap.has(line));
         return countMap;
       }, new Map<number, boolean>());

@@ -25,10 +25,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." > /dev/null
 # extension's build time.
 if [[ ! -f src/protos/protos.js ]] ; then
   sed -e "s#^#src/protos/#" src/protos/protos_list.txt | \
-      xargs npx pbjs -t static-module -o src/protos/protos.js
+      xargs npx -p protobufjs-cli pbjs -t static-module -p src/protos -o src/protos/protos.js
 fi
 if [[ ! -f src/protos/protos.d.ts ]] ; then
-  npx pbts -o src/protos/protos.d.ts src/protos/protos.js
+  npx -p protobufjs-cli pbts -o src/protos/protos.d.ts src/protos/protos.js
 fi
 
 # Convert yaml language definition to json form requred by vscode.
