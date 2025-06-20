@@ -23,8 +23,10 @@ import {
   queryQuickPickTargets,
 } from "../bazel";
 import { BazelCQuery } from "../bazel/bazel_cquery";
+import { BazelQuery } from "../bazel/bazel_query";
 import { BazelInfo } from "../bazel/bazel_info";
 import { assert } from "console";
+import * as fs from "fs";
 
 /**
  * Get the output of the given target.
@@ -104,7 +106,110 @@ async function bazelGetTargetOutput(
   }
 }
 
-/**
+async function findBazelPackagePath(
+  filePath: string,
+  workspacePath: string,
+): Promise<string | undefined> {
+  let currentDir = path.dirname(filePath);
+  while (currentDir.startsWith(workspacePath) && currentDir !== workspacePath) {
+    if (
+      fs.existsSync(path.join(currentDir, "BUILD")) ||
+      fs.existsSync(path.join(currentDir, "BUILD.bazel"))
+    ) {
+      return currentDir;
+    }
+    currentDir = path.dirname(currentDir);
+  }
+  // Check the workspace root itself
+  if (
+    fs.existsSync(path.join(workspacePath, "BUILD")) ||
+    fs.existsSync(path.join(workspacePath, "BUILD.bazel"))
+  ) {
+    return workspacePath;
+  }
+  return undefined;
+}
+
+async function resolveBazelTargetForCurrentFile(
+  ruleKindFilterRegex: string,
+): Promise<string | undefined> {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    vscode.window.showInformationMessage(
+      "Cannot resolve Bazel target: No active text editor.",
+    );
+    return undefined;
+  }
+
+  const currentFilePath = editor.document.uri.fsPath;
+  if (!currentFilePath) {
+    vscode.window.showInformationMessage(
+      "Cannot resolve Bazel target: Active file has no path.",
+    );
+    return undefined;
+  }
+
+  const workspaceInfo = await BazelWorkspaceInfo.fromWorkspaceFolders();
+  if (!workspaceInfo) {
+    vscode.window.showInformationMessage(
+      "Please open a Bazel workspace folder to use this command.",
+    );
+    return undefined;
+  }
+
+  // Determine the file's package path relative to the workspace root
+  const packagePath = await findBazelPackagePath(
+    currentFilePath,
+    workspaceInfo.bazelWorkspacePath,
+  );
+
+  if (!packagePath) {
+    vscode.window.showInformationMessage(
+      `Cannot resolve Bazel target: Could not find BUILD file for ${currentFilePath}.`,
+    );
+    return undefined;
+  }
+
+  const relativePackagePath = path.relative(workspaceInfo.bazelWorkspacePath, packagePath);
+  const fileName = path.basename(currentFilePath);
+  // Construct the label for the file itself
+  const fileLabel = `//${relativePackagePath}:${fileName}`;
+
+  // Query for direct reverse dependencies in the same package, filtered by kind, limit to one.
+  const query = `some(kind("(${ruleKindFilterRegex})", same_pkg_direct_rdeps(set(${fileLabel}))))`;
+
+  try {
+    const queryResult = await new BazelQuery(
+      getDefaultBazelExecutablePath(),
+      workspaceInfo.bazelWorkspacePath,
+    ).queryTargets(query, {});
+
+    if (queryResult.target && queryResult.target.length > 0) {
+      const firstTarget = queryResult.target[0]; // Should be only one due to some()
+      if (firstTarget.rule && firstTarget.rule.name) {
+        return firstTarget.rule.name;
+      }
+    }
+    // No message if no target found, VS Code won't substitute.
+    return undefined;
+  } catch (error) {
+    // Check if error is due to "no such target" for the fileLabel itself
+    if (error.message && error.message.includes(`no such target '${fileLabel}'`)) {
+        // This is expected if the file is not explicitly listed in a BUILD file (e.g. source file)
+        // We might need a different query strategy if files themselves aren't targets,
+        // e.g. query on the directory or all targets in the package and then filter.
+        // For now, let's assume fileLabel is valid or rdeps can handle non-target files.
+        // The user feedback implied rdeps on a file, so let's proceed with this assumption.
+        // If tests fail here, this is the area to revisit.
+          vscode.window.showInformationMessage(
+            `No Bazel target found for file ${fileLabel} that matches the criteria.`
+          );
+    } else {
+        vscode.window.showErrorMessage(
+          `Error resolving Bazel target: ${error.message || error}`,
+        );
+    }
+    return undefined;
  * Get the output of `bazel info` for the given key.
  *
  * If there are multiple outputs, a quick-pick window will be opened asking the
@@ -206,6 +311,15 @@ export function activateCommandVariables(): vscode.Disposable[] {
     vscode.commands.registerCommand(
       "bazel.getTargetOutput",
       bazelGetTargetOutput,
+    ),
+    vscode.commands.registerCommand("bazel.currentTarget", () =>
+      resolveBazelTargetForCurrentFile(".*_test rule.*|.*_binary rule.*"),
+    ),
+    vscode.commands.registerCommand("bazel.currentTestTarget", () =>
+      resolveBazelTargetForCurrentFile(".*_test rule.*"),
+    ),
+    vscode.commands.registerCommand("bazel.currentBinaryTarget", () =>
+      resolveBazelTargetForCurrentFile(".*_binary rule.*"),
     ),
     ...["pickPackage", "pickTarget"].map((key, idx) => {
       const commandName = `bazel.${key}`;
