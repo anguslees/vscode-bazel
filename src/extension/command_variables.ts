@@ -30,48 +30,11 @@ import * as fs from "fs";
 
 /**
  * Get the output of the given target.
- *
- * If there are multiple outputs, a quick-pick window will be opened asking the
- * user to choose one.
- *
- * The `bazel.getTargetOutput` command can be used in launch configurations to
- * obtain the path to an executable built by Bazel. For example, you can set the
- * "program" attribute of a launch configuration to an input variable:
- *
- * ```
- * "program": "${input:binaryOutputLocation}"
- * ```
- *
- * Then define a command input variable:
- *
- * ```
- * "inputs": [
- *     {
- *         "id": "binaryOutputLocation",
- *         "type": "command",
- *         "command": "bazel.getTargetOutput",
- *         "args": ["//my/binary:target"],
- *     }
- * ]
- * ```
- *
- * Additional Bazel flags can be provided:
- *
- * ```
- * "inputs": [
- *     {
- *         "id": "debugOutputLocation",
- *         "type": "command",
- *         "command": "bazel.getTargetOutput",
- *         "args": ["//my/binary:target", ["--compilation_mode", "dbg"]],
- *     }
- * ]
- * ```
  */
 async function bazelGetTargetOutput(
   target: string,
   options: string[] = [],
-): Promise<string> {
+): Promise<string | undefined> { // Return type can be undefined if user cancels quickpick
   // Workaround for https://github.com/microsoft/vscode/issues/167970
   if (Array.isArray(target)) {
     options = (target[1] || []) as string[];
@@ -79,12 +42,10 @@ async function bazelGetTargetOutput(
   }
   const workspaceInfo = await BazelWorkspaceInfo.fromWorkspaceFolders();
   if (!workspaceInfo) {
-    // eslint-disable-next-line @typescript-eslint/no-floating-promises
     vscode.window.showInformationMessage(
       "Please open a Bazel workspace folder to use this command.",
     );
-
-    return;
+    return undefined;
   }
   const outputPath = await new BazelInfo(
     getDefaultBazelExecutablePath(),
@@ -94,24 +55,35 @@ async function bazelGetTargetOutput(
     getDefaultBazelExecutablePath(),
     workspaceInfo.bazelWorkspacePath,
   ).queryOutputs(target, options);
-  switch (outputs.length) {
-    case 0:
-      throw new Error(`Target ${target} has no outputs.`);
-    case 1:
-      return path.join(outputPath, "..", outputs[0]);
-    default:
-      return await vscode.window.showQuickPick(outputs, {
-        placeHolder: `Pick an output of ${target}`,
-      });
+
+  if (outputs.length === 0) {
+    // Changed to showInformationMessage as an error might be too disruptive if target genuinely has no outputs.
+    vscode.window.showInformationMessage(`Target ${target} has no outputs.`);
+    return undefined;
   }
+  if (outputs.length === 1) {
+    return path.join(outputPath, "..", outputs[0]);
+  }
+  // Multiple outputs, show quick pick
+  const pickedOutput = await vscode.window.showQuickPick(outputs, {
+    placeHolder: `Pick an output of ${target}`,
+  });
+  if (pickedOutput) {
+    return path.join(outputPath, "..", pickedOutput);
+  }
+  return undefined; // User cancelled quick pick
 }
 
+// Helper function to find the Bazel package path for a given file
 async function findBazelPackagePath(
   filePath: string,
   workspacePath: string,
 ): Promise<string | undefined> {
   let currentDir = path.dirname(filePath);
-  while (currentDir.startsWith(workspacePath) && currentDir !== workspacePath) {
+  const normalizedWorkspacePath = path.normalize(workspacePath);
+  currentDir = path.normalize(currentDir);
+
+  while (currentDir.startsWith(normalizedWorkspacePath) && currentDir !== normalizedWorkspacePath) {
     if (
       fs.existsSync(path.join(currentDir, "BUILD")) ||
       fs.existsSync(path.join(currentDir, "BUILD.bazel"))
@@ -120,12 +92,11 @@ async function findBazelPackagePath(
     }
     currentDir = path.dirname(currentDir);
   }
-  // Check the workspace root itself
-  if (
-    fs.existsSync(path.join(workspacePath, "BUILD")) ||
-    fs.existsSync(path.join(workspacePath, "BUILD.bazel"))
-  ) {
-    return workspacePath;
+  if (currentDir === normalizedWorkspacePath &&
+      (fs.existsSync(path.join(currentDir, "BUILD")) ||
+       fs.existsSync(path.join(currentDir, "BUILD.bazel")))
+     ) {
+    return currentDir;
   }
   return undefined;
 }
@@ -157,25 +128,22 @@ async function resolveBazelTargetForCurrentFile(
     return undefined;
   }
 
-  // Determine the file's package path relative to the workspace root
-  const packagePath = await findBazelPackagePath(
+  const packageDir = await findBazelPackagePath(
     currentFilePath,
     workspaceInfo.bazelWorkspacePath,
   );
 
-  if (!packagePath) {
+  if (!packageDir) {
     vscode.window.showInformationMessage(
-      `Cannot resolve Bazel target: Could not find BUILD file for ${currentFilePath}.`,
+      `Cannot resolve Bazel target: Could not find BUILD file for ${currentFilePath}. Ensure the file is within a Bazel package.`,
     );
     return undefined;
   }
 
-  const relativePackagePath = path.relative(workspaceInfo.bazelWorkspacePath, packagePath);
+  const relativePackagePath = path.relative(workspaceInfo.bazelWorkspacePath, packageDir).replace(/\\/g, '/');
   const fileName = path.basename(currentFilePath);
-  // Construct the label for the file itself
   const fileLabel = `//${relativePackagePath}:${fileName}`;
 
-  // Query for direct reverse dependencies in the same package, filtered by kind, limit to one.
   const query = `some(kind("(${ruleKindFilterRegex})", same_pkg_direct_rdeps(set(${fileLabel}))))`;
 
   try {
@@ -185,76 +153,71 @@ async function resolveBazelTargetForCurrentFile(
     ).queryTargets(query, {});
 
     if (queryResult.target && queryResult.target.length > 0) {
-      const firstTarget = queryResult.target[0]; // Should be only one due to some()
-      if (firstTarget.rule && firstTarget.rule.name) {
+      const firstTarget = queryResult.target[0];
+      if (firstTarget?.rule?.name) {
         return firstTarget.rule.name;
       }
     }
-    // No message if no target found, VS Code won't substitute.
-    return undefined;
-  } catch (error) {
-    // Check if error is due to "no such target" for the fileLabel itself
+    return undefined; // No target found matching criteria
+  } catch (error: any) { // Added type assertion for error
     if (error.message && error.message.includes(`no such target '${fileLabel}'`)) {
-        // This is expected if the file is not explicitly listed in a BUILD file (e.g. source file)
-        // We might need a different query strategy if files themselves aren't targets,
-        // e.g. query on the directory or all targets in the package and then filter.
-        // For now, let's assume fileLabel is valid or rdeps can handle non-target files.
-        // The user feedback implied rdeps on a file, so let's proceed with this assumption.
-        // If tests fail here, this is the area to revisit.
-          vscode.window.showInformationMessage(
-            `No Bazel target found for file ${fileLabel} that matches the criteria.`
-          );
+      vscode.window.showInformationMessage(
+        `Bazel query note: The file ${fileLabel} is not an explicit target. ` +
+        `This may be why no reverse dependencies were found.`
+      );
     } else {
-        vscode.window.showErrorMessage(
-          `Error resolving Bazel target: ${error.message || error}`,
-        );
+      vscode.window.showErrorMessage(
+        `Error resolving Bazel target with query "${query}": ${error.message || String(error)}`,
+      );
     }
     return undefined;
- * Get the output of `bazel info` for the given key.
- *
- * If there are multiple outputs, a quick-pick window will be opened asking the
- * user to choose one.
+  } // This is the corrected closing brace for the catch block
+} // This is the closing brace for the resolveBazelTargetForCurrentFile function
+
+/**
+ * Get the output of \`bazel info\` for the given key.
  */
-async function bazelInfo(key: string): Promise<string> {
+async function bazelInfo(key: string): Promise<string | undefined> { // Return type can be undefined
   const workspaceInfo = await BazelWorkspaceInfo.fromWorkspaceFolders();
   if (!workspaceInfo) {
-    // eslint-disable-next-line @typescript-eslint/no-floating-promises
     vscode.window.showInformationMessage(
       "Please open a Bazel workspace folder to use this command.",
     );
-    return;
+    return undefined;
   }
-  return new BazelInfo(
-    getDefaultBazelExecutablePath(),
-    workspaceInfo.bazelWorkspacePath,
-  ).getOne(key);
+  try {
+    return await new BazelInfo(
+      getDefaultBazelExecutablePath(),
+      workspaceInfo.bazelWorkspacePath,
+    ).getOne(key);
+  } catch (error: any) {
+    vscode.window.showErrorMessage(`Error getting Bazel info for key "${key}": ${error.message || String(error)}`);
+    return undefined;
+  }
 }
 
 /**
  * Gets a string-valued argument in a typesafe manner from an object.
- * Throws `Error`s with user-friendly error messages in case of an error.
- *
- * @param args the arguments
- * @param argName the argument name
- * @param commandName the commmand name. Used in the error message
- * @returns the extracted string value
  */
 function getArgumentValue(
   args: Record<string, any>,
   argName: string,
   commandName: string,
 ): string | undefined {
-  if (argName in args && typeof args[argName] === "string") {
+  if (argName in args && typeof args[argName] === 'string') {
     return args[argName] as string;
   } else if (argName in args) {
-    throw new Error(
-      `Expected the \`${argName}\` argument for \`${commandName}\` to be a string`,
+    // Don't throw, just return undefined or message, as per VS Code guidelines for commands
+    vscode.window.showErrorMessage(
+        `Expected the \`${argName}\` argument for \`${commandName}\` to be a string, but got ${typeof args[argName]}`
     );
+    return undefined;
   }
+  return undefined;
 }
 
 /**
- * Wraps the `queryQuickPickPackage` / `queryQuickPickTargets` functions
+ * Wraps the \`queryQuickPickPackage\` / \`queryQuickPickTargets\` functions
  * so they can be exposed as command variables.
  */
 async function wrapQuickPick(
@@ -264,43 +227,44 @@ async function wrapQuickPick(
 ): Promise<string | undefined> {
   const workspaceInfo = await BazelWorkspaceInfo.fromWorkspaceFolders();
   if (!workspaceInfo) {
-    // eslint-disable-next-line @typescript-eslint/no-floating-promises
     vscode.window.showInformationMessage(
       "Please open a Bazel workspace folder to use this command.",
     );
-
-    return;
+    return undefined;
   }
 
-  // Default values, overridable from the `tasks.json` invocation
   let query = "//...";
   let placeHolder = "";
 
-  // Interpret the arguments
-  if (args) {
-    if (!(args instanceof Object) || args instanceof Array) {
-      throw new Error(
-        `Expected the \`args\` for \`${commandName}\` to be an object`,
+  if (args && typeof args === 'object' && args !== null) {
+    const castArgs = args as Record<string, any>; // Type assertion
+    query = getArgumentValue(castArgs, "query", commandName) ?? query;
+    placeHolder = getArgumentValue(castArgs, "placeHolder", commandName) ?? placeHolder;
+  } else if (args) {
+      vscode.window.showErrorMessage(
+        `Expected the \`args\` for \`${commandName}\` to be an object or undefined, received ${typeof args}`
       );
-    } else {
-      query = getArgumentValue(args, "query", commandName) ?? query;
-      placeHolder =
-        getArgumentValue(args, "placeHolder", commandName) ?? placeHolder;
-    }
+      return undefined;
   }
-  const quickPick = await vscode.window.showQuickPick(
-    queryQuickPick({ query, workspaceInfo }),
-    {
-      canPickMany: false,
-      placeHolder,
-    },
-  );
-  if (quickPick === undefined) {
-    // If the user cancelled the quick pick, fail the substitution
-    return;
+
+  const quickPickItems = await queryQuickPick({ query, workspaceInfo });
+  if (!quickPickItems || quickPickItems.length === 0) {
+    vscode.window.showInformationMessage("No items found for the quick pick.");
+    return undefined;
   }
-  assert(quickPick.getBazelCommandOptions().targets.length === 1);
-  return quickPick.getBazelCommandOptions().targets[0];
+
+  const quickPickResult = await vscode.window.showQuickPick(quickPickItems, { // Pass QuickPickItem[]
+    canPickMany: false,
+    placeHolder,
+  });
+
+  if (quickPickResult === undefined) {
+    return undefined; // User cancelled
+  }
+
+  // Assuming BazelTargetQuickPick has getBazelCommandOptions returning { targets: string[] }
+  assert(quickPickResult.getBazelCommandOptions().targets.length === 1);
+  return quickPickResult.getBazelCommandOptions().targets[0];
 }
 
 /**
@@ -325,7 +289,7 @@ export function activateCommandVariables(): vscode.Disposable[] {
       const commandName = `bazel.${key}`;
       const funcs = [queryQuickPickPackage, queryQuickPickTargets];
       const func = funcs[idx];
-      return vscode.commands.registerCommand(commandName, (args) =>
+      return vscode.commands.registerCommand(commandName, (args: unknown) =>
         wrapQuickPick(commandName, func, args),
       );
     }),
