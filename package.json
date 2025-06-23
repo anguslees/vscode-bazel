@@ -108,21 +108,6 @@
                 "command": "bazel.lsp.restart",
                 "title": "Restart language server",
                 "when": "bazel.lsp.enabled"
-            },
-            {
-                "category": "Bazel",
-                "command": "bazel.currentTarget",
-                "title": "Bazel: Get Current Target (File Dependency)"
-            },
-            {
-                "category": "Bazel",
-                "command": "bazel.currentTestTarget",
-                "title": "Bazel: Get Current Test Target (File Dependency)"
-            },
-            {
-                "category": "Bazel",
-                "command": "bazel.currentBinaryTarget",
-                "title": "Bazel: Get Current Binary Target (File Dependency)"
             }
         ],
         "configuration": {
